@@ -510,7 +510,7 @@ fn drainMailbox(self: *Thread) !void {
                 defer config.alloc.destroy(config.thread);
                 defer config.alloc.destroy(config.impl);
                 try self.changeConfig(config.thread);
-                try self.renderer.changeConfig(config.impl);
+                try self.renderer.changeConfig(config.impl, config.shader_generation);
 
                 // The config affects what animation wakes the
                 // renderer needs (custom shaders, animation mode).

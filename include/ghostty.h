@@ -930,6 +930,11 @@ typedef enum {
   GHOSTTY_CUSTOM_SHADER_FAILURE_PIPELINE_FAILED,
 } ghostty_action_custom_shader_failure_e;
 
+typedef struct {
+  ghostty_action_custom_shader_failure_e reason;
+  uint64_t generation;
+} ghostty_action_custom_shader_failure_s;
+
 // apprt.action.KeySequence
 typedef struct {
   bool active;
@@ -1162,7 +1167,7 @@ typedef union {
   ghostty_action_mouse_visibility_e mouse_visibility;
   ghostty_action_mouse_over_link_s mouse_over_link;
   ghostty_action_renderer_health_e renderer_health;
-  ghostty_action_custom_shader_failure_e custom_shader_failed;
+  ghostty_action_custom_shader_failure_s custom_shader_failed;
   ghostty_action_quit_timer_e quit_timer;
   ghostty_action_float_window_e float_window;
   ghostty_action_secure_input_e secure_input;
@@ -1375,6 +1380,9 @@ GHOSTTY_API ghostty_surface_config_s ghostty_surface_inherited_config(ghostty_su
 // safe, as is calling it on a config that carries no working directory.
 GHOSTTY_API void ghostty_surface_free_inherited_config(ghostty_surface_config_s*);
 GHOSTTY_API void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
+GHOSTTY_API void ghostty_surface_update_config_tagged(ghostty_surface_t,
+                                                       ghostty_config_t,
+                                                       uint64_t shader_generation);
 GHOSTTY_API bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_process_exited(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_write_buffer(ghostty_surface_t, const uint8_t*, uintptr_t);
