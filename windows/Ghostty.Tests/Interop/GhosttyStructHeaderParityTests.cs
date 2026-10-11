@@ -329,7 +329,7 @@ public class GhosttyStructHeaderParityTests
                    && (backing == typeof(int) || backing == typeof(uint));
         }
 
-        if (cType.EndsWith("*", StringComparison.Ordinal))
+        if (cType.EndsWith("*", StringComparison.Ordinal) || IsCallback(cType))
         {
             return managed == typeof(IntPtr) || managed == typeof(UIntPtr);
         }
@@ -351,6 +351,12 @@ public class GhosttyStructHeaderParityTests
             _ => false,
         };
     }
+
+    // The header's function pointer typedefs (ghostty_*_cb) are pointers by
+    // another name.
+    private static bool IsCallback(string cType) =>
+        cType.StartsWith("ghostty_", StringComparison.Ordinal)
+        && cType.EndsWith("_cb", StringComparison.Ordinal);
 
     private static string ToPascal(string snake) =>
         string.Concat(snake.Split('_', StringSplitOptions.RemoveEmptyEntries)
@@ -417,7 +423,7 @@ public class GhosttyStructHeaderParityTests
     // would make every offset after it a fiction while still reading green.
     private static int SizeOfCType(string type, string typedefName, string line)
     {
-        if (type.EndsWith("*", StringComparison.Ordinal)) return 8;
+        if (type.EndsWith("*", StringComparison.Ordinal) || IsCallback(type)) return 8;
 
         // A C enum is an int in every ABI this ships on, and the header's enums
         // all fit in one.
