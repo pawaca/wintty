@@ -62,6 +62,7 @@ pub const Message = union(enum) {
         alloc: Allocator,
         thread: *renderer.Thread.DerivedConfig,
         impl: *renderer.Renderer.DerivedConfig,
+        shader_generation: u64,
     },
 
     /// Matches for the current viewport from the search thread. These happen
@@ -90,7 +91,7 @@ pub const Message = union(enum) {
     };
 
     /// Initialize a change_config message.
-    pub fn initChangeConfig(alloc: Allocator, config: *const configpkg.Config) !Message {
+    pub fn initChangeConfig(alloc: Allocator, config: *const configpkg.Config, shader_generation: u64) !Message {
         const thread_ptr = try alloc.create(renderer.Thread.DerivedConfig);
         errdefer alloc.destroy(thread_ptr);
         const config_ptr = try alloc.create(renderer.Renderer.DerivedConfig);
@@ -105,6 +106,7 @@ pub const Message = union(enum) {
                 .alloc = alloc,
                 .thread = thread_ptr,
                 .impl = config_ptr,
+                .shader_generation = shader_generation,
             },
         };
     }
