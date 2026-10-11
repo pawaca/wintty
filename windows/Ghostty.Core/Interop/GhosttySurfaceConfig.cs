@@ -57,4 +57,8 @@ internal struct GhosttySurfaceConfig
     // C99 _Bool close_on_clean_exit: a one-off launch command (-e) closes
     // its pane on exit code 0 and keeps it open otherwise (#1175).
     public byte CloseOnCleanExit;
+    public GhosttySurfaceIoBackend Backend;
+    public IntPtr ReceiveUserdata;
+    public IntPtr ReceiveBuffer;   // ghostty_surface_receive_buffer_cb
+    public IntPtr ReceiveResize;   // ghostty_surface_receive_resize_cb
 }

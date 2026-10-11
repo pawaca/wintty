@@ -17,6 +17,7 @@ const input = @import("../input.zig");
 const internal_os = @import("../os/main.zig");
 const renderer = @import("../renderer.zig");
 const terminal = @import("../terminal/main.zig");
+const termio = @import("../termio.zig");
 const CoreApp = @import("../App.zig");
 const CoreInspector = @import("../inspector/main.zig").Inspector;
 const CoreSurface = @import("../Surface.zig");
@@ -507,6 +508,8 @@ pub const Surface = struct {
     app: *App,
     platform: Platform,
     userdata: ?*anyopaque = null,
+    termio_backend: TermioBackend = .exec,
+    host_io: HostIO = .{},
     core_surface: CoreSurface,
     content_scale: apprt.ContentScale,
     size: apprt.SurfaceSize,
@@ -573,6 +576,17 @@ pub const Surface = struct {
         userdata: ?*anyopaque,
     };
 
+    pub const TermioBackend = enum(c_int) {
+        exec = 0,
+        host_managed = 1,
+    };
+
+    pub const HostIO = struct {
+        userdata: ?*anyopaque = null,
+        receive_buffer: ?termio.HostManaged.Config.Write = null,
+        receive_resize: ?termio.HostManaged.Config.Resize = null,
+    };
+
     /// Surface initialization options.
     pub const Options = extern struct {
         /// The platform that this surface is being initialized for and
@@ -636,6 +650,20 @@ pub const Surface = struct {
         /// Terminal's `closeOnExit: graceful` does. Ignored when the user set
         /// `wait-after-command` themselves, which then holds as configured.
         close_on_clean_exit: bool = false,
+
+        /// The backend used to satisfy terminal IO for this surface.
+        backend: TermioBackend = .exec,
+
+        /// Userdata passed to host-managed IO callbacks.
+        receive_userdata: ?*anyopaque = null,
+
+        /// Called when Ghostty emits bytes that should be sent to the host
+        /// transport.
+        receive_buffer: ?termio.HostManaged.Config.Write = null,
+
+        /// Called when the terminal size changes and the host transport
+        /// should be updated.
+        receive_resize: ?termio.HostManaged.Config.Resize = null,
     };
 
     // Options is declared three times: here, as ghostty_surface_config_s in
@@ -665,7 +693,11 @@ pub const Surface = struct {
             if (@offsetOf(Options, "width") != 120) @compileError("Options layout drifted from ghostty_surface_config_s");
             if (@offsetOf(Options, "height") != 124) @compileError("Options layout drifted from ghostty_surface_config_s");
             if (@offsetOf(Options, "close_on_clean_exit") != 128) @compileError("Options layout drifted from ghostty_surface_config_s");
-            if (@sizeOf(Options) != 136) @compileError("Options layout drifted from ghostty_surface_config_s");
+            if (@offsetOf(Options, "backend") != 132) @compileError("Options layout drifted from ghostty_surface_config_s");
+            if (@offsetOf(Options, "receive_userdata") != 136) @compileError("Options layout drifted from ghostty_surface_config_s");
+            if (@offsetOf(Options, "receive_buffer") != 144) @compileError("Options layout drifted from ghostty_surface_config_s");
+            if (@offsetOf(Options, "receive_resize") != 152) @compileError("Options layout drifted from ghostty_surface_config_s");
+            if (@sizeOf(Options) != 160) @compileError("Options layout drifted from ghostty_surface_config_s");
         }
     }
 
@@ -674,6 +706,12 @@ pub const Surface = struct {
             .app = app,
             .platform = try .init(opts.platform_tag, opts.platform),
             .userdata = opts.userdata,
+            .termio_backend = opts.backend,
+            .host_io = .{
+                .userdata = opts.receive_userdata orelse opts.userdata,
+                .receive_buffer = opts.receive_buffer,
+                .receive_resize = opts.receive_resize,
+            },
             .core_surface = undefined,
             .content_scale = .{
                 .x = @floatCast(opts.scale_factor),
@@ -908,6 +946,19 @@ pub const Surface = struct {
 
     pub fn core(self: *Surface) *CoreSurface {
         return &self.core_surface;
+    }
+
+    pub fn termioBackend(self: *const Surface) TermioBackend {
+        return self.termio_backend;
+    }
+
+    pub fn hostManagedConfig(self: *const Surface) !termio.HostManaged.Config {
+        const write = self.host_io.receive_buffer orelse return error.HostManagedWriteRequired;
+        return .{
+            .userdata = self.host_io.userdata,
+            .write = write,
+            .resize = self.host_io.receive_resize,
+        };
     }
 
     pub fn rtApp(self: *const Surface) *App {
@@ -2598,6 +2649,28 @@ pub const CAPI = struct {
     /// Returns true if the surface process has exited.
     export fn ghostty_surface_process_exited(surface: *Surface) bool {
         return surface.core_surface.child_exited;
+    }
+
+    export fn ghostty_surface_write_buffer(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+    ) void {
+        if (len == 0) return;
+        surface.core_surface.io.processOutput(ptr[0..len]);
+    }
+
+    export fn ghostty_surface_process_exit(
+        surface: *Surface,
+        exit_code: u32,
+        runtime_ms: u64,
+    ) void {
+        _ = surface.core_surface.io.surface_mailbox.push(.{
+            .child_exited = .{
+                .exit_code = exit_code,
+                .runtime_ms = runtime_ms,
+            },
+        }, .{ .forever = {} });
     }
 
     /// Returns true if the surface has a selection.

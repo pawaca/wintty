@@ -143,6 +143,11 @@ public class GhosttyActionTagHeaderParityTests
         AssertMatchesHeader<GhosttySurfaceContext>(
             "ghostty_surface_context_e", "GHOSTTY_SURFACE_CONTEXT_", explicitValues: true);
 
+    [Fact]
+    public void SurfaceIoBackend_Values_Match_Header() =>
+        AssertMatchesHeader<GhosttySurfaceIoBackend>(
+            "ghostty_surface_io_backend_e", "GHOSTTY_SURFACE_IO_BACKEND_", explicitValues: true);
+
     // Explicit values, and one of them is negative: a rebuild of a running
     // app's config applies only on LOADED, so a member that renumbered would
     // let a config the loader refused be pushed at every live surface.

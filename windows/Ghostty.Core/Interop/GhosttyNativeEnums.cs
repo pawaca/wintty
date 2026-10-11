@@ -33,6 +33,12 @@ internal enum GhosttySurfaceContext
     Split = 2,
 }
 
+internal enum GhosttySurfaceIoBackend
+{
+    Exec = 0,
+    HostManaged = 1,
+}
+
 // ghostty_config_default_files_e is deliberately not here. It lives beside
 // the rule that reads it, as Ghostty.Core.Config.ConfigFilesFound, so there
 // is one managed spelling of it rather than an interop mirror plus a second
