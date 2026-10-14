@@ -564,6 +564,18 @@ typedef enum {
   GHOSTTY_SURFACE_CONTEXT_SPLIT = 2,
 } ghostty_surface_context_e;
 
+typedef enum {
+  GHOSTTY_SURFACE_IO_BACKEND_EXEC = 0,
+  GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED = 1,
+} ghostty_surface_io_backend_e;
+
+typedef void (*ghostty_surface_receive_buffer_cb)(void*, const uint8_t*, size_t);
+typedef void (*ghostty_surface_receive_resize_cb)(void*,
+                                               uint16_t,
+                                               uint16_t,
+                                               uint32_t,
+                                               uint32_t);
+
 typedef struct {
   ghostty_platform_e platform_tag;
   ghostty_platform_u platform;
@@ -600,6 +612,13 @@ typedef struct {
   // exits 0, keep it open on any other exit (Windows Terminal's closeOnExit
   // "graceful"). Ignored when the user set wait-after-command themselves.
   bool close_on_clean_exit;
+
+  // Optional host-managed IO. These fields are appended so the layout of
+  // every pre-existing surface option remains stable.
+  ghostty_surface_io_backend_e backend;
+  void* receive_userdata;
+  ghostty_surface_receive_buffer_cb receive_buffer;
+  ghostty_surface_receive_resize_cb receive_resize;
 } ghostty_surface_config_s;
 
 typedef struct {
@@ -1417,10 +1436,18 @@ GHOSTTY_API void ghostty_surface_free_inherited_config(ghostty_surface_config_s*
 GHOSTTY_API void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
 GHOSTTY_API bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_process_exited(ghostty_surface_t);
+GHOSTTY_API void ghostty_surface_write_buffer(ghostty_surface_t, const uint8_t*, uintptr_t);
+GHOSTTY_API void ghostty_surface_process_exit(ghostty_surface_t, uint32_t, uint64_t);
 GHOSTTY_API void ghostty_surface_refresh(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_draw(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 GHOSTTY_API void ghostty_surface_set_focus(ghostty_surface_t, bool);
+// Append a host-defined custom-shader event. Coordinates are in surface
+// pixels; kind is interpreted by the embedding application. The renderer
+// stores the event with the current shader time in iEvents.
+GHOSTTY_API void ghostty_surface_add_event(ghostty_surface_t, float, float, float);
+// Remove all host-defined custom-shader events from iEvents.
+GHOSTTY_API void ghostty_surface_clear_events(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_set_occlusion(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_idle(ghostty_surface_t, bool);
 GHOSTTY_API bool ghostty_surface_go_dormant(ghostty_surface_t);

@@ -240,6 +240,8 @@ public class GhosttyStructHeaderParityTests
         new Dictionary<string, (int Size, int Align, Type Managed)>
         {
             ["ghostty_platform_u"] = (32, 8, typeof(GhosttyPlatformUnion)),
+            ["ghostty_surface_receive_buffer_cb"] = (8, 8, typeof(IntPtr)),
+            ["ghostty_surface_receive_resize_cb"] = (8, 8, typeof(IntPtr)),
         };
 
     private const string EmbeddedZigResource = "Ghostty.Tests.Interop.Exports.apprt.embedded.zig";

@@ -342,6 +342,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         alloc,
         switch (backend) {
             .exec => |*exec| exec.subprocess.args,
+            .host_managed => &.{},
         },
     );
     // Bare `wsl.exe` (no -d) leaves the distro name unknown; resolve the default
