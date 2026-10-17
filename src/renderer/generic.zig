@@ -206,12 +206,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// because at renderer-init time the apprt has not necessarily
         /// registered the surface yet, so an action raised there can be
         /// dropped. `.first_render` above takes the same route.
-        custom_shader_failure: ?renderer.CustomShaderFailure = null,
+        custom_shader_failure: ?renderer.CustomShaderFailureReport = null,
 
         /// Why the next lazy shader rebuild in `drawFrame` happens. Armed
         /// wherever `reinitialize_shaders` is set; `initShaders` reads it to
         /// decide whether a failure should reach the user.
         shader_init_cause: ShaderInitCause = .startup,
+
+        /// Host identity of the config whose next shader rebuild is pending.
+        shader_init_generation: u64 = 0,
 
         /// The current GPU uniform values.
         ///
@@ -1109,19 +1112,26 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // `log.warn` nobody reads is otherwise the only trace.
             if (cause.armsNotice() and configured) {
                 if (!has_custom_shaders) {
-                    self.custom_shader_failure = .load_failed;
+                    self.custom_shader_failure = .{
+                        .reason = .load_failed,
+                        .generation = self.shader_init_generation,
+                    };
                 } else if (shaders.post_pipelines.len == 0) {
                     // Backends that can say why record it on their Shaders
                     // struct; everyone else gets the generic pipeline
                     // failure. Same comptime-probe idiom as the
                     // `@hasField(Pipeline, "pso")` guard in drawFrame.
-                    self.custom_shader_failure = if (comptime @hasField(
+                    const reason = if (comptime @hasField(
                         @TypeOf(shaders),
                         "post_failure",
                     ))
                         shaders.post_failure orelse .pipeline_failed
                     else
                         .pipeline_failed;
+                    self.custom_shader_failure = .{
+                        .reason = reason,
+                        .generation = self.shader_init_generation,
+                    };
                 }
             }
         }
@@ -3134,7 +3144,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         /// Update the configuration.
-        pub fn changeConfig(self: *Self, config: *DerivedConfig) !void {
+        pub fn changeConfig(self: *Self, config: *DerivedConfig, shader_generation: u64) !void {
             self.draw_mutex.lockUncancelable(global.io());
             defer self.draw_mutex.unlock(global.io());
 
@@ -3285,6 +3295,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 if (blending_needs_reinit) {
                     self.reinitialize_shaders = true;
                     self.shader_init_cause = .config_reload;
+                    self.shader_init_generation = shader_generation;
                     // And indicate that our swap chain targets need to
                     // be re-created to account for the new blending mode.
                     self.target_config_modified +%= 1;
@@ -3294,6 +3305,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (custom_shaders_changed) {
                 self.reinitialize_shaders = true;
                 self.shader_init_cause = .config_reload;
+                self.shader_init_generation = shader_generation;
             }
         }
 

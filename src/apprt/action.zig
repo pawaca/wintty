@@ -372,7 +372,7 @@ pub const Action = union(Key) {
     /// renderer could not load, compile, or build a pipeline for it. The
     /// terminal keeps rendering normally without the shader, so this is
     /// the only signal that the setting silently did nothing.
-    custom_shader_failed: renderer.CustomShaderFailure,
+    custom_shader_failed: renderer.CustomShaderFailureReport,
 
     // Windows-apprt tab-shell actions. Appended so the union field order
     // keeps matching the Key enum below, whose tail mirrors this block.

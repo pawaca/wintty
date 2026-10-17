@@ -2615,6 +2615,19 @@ pub const CAPI = struct {
         };
     }
 
+    /// Update a surface config while tagging any resulting custom-shader
+    /// failure with a host-chosen generation.
+    export fn ghostty_surface_update_config_tagged(
+        surface: *Surface,
+        config: *const Config,
+        shader_generation: u64,
+    ) void {
+        surface.core_surface.updateConfigTagged(config, shader_generation) catch |err| {
+            log.err("error updating tagged config err={}", .{err});
+            return;
+        };
+    }
+
     /// Swap this surface's per-surface custom shader override live. This is
     /// the same path a config reload takes (core_surface.updateConfig), so
     /// the renderer rebuilds its post-process pipeline while the grid,

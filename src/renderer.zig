@@ -7,6 +7,7 @@
 //! APIs. The renderers in this package assume that the renderer is already
 //! setup (OpenGL has a context, Vulkan has a surface, etc.)
 
+const std = @import("std");
 const build_config = @import("build_config.zig");
 
 const cursor = @import("renderer/cursor.zig");
@@ -98,6 +99,20 @@ pub const CustomShaderFailure = enum(c_int) {
         );
     }
 };
+
+/// A custom-shader failure and the host-provided generation of the config
+/// whose shader initialization produced it. Generation zero is used by
+/// ordinary, untagged config updates.
+pub const CustomShaderFailureReport = extern struct {
+    reason: CustomShaderFailure,
+    generation: u64,
+};
+
+test "CustomShaderFailureReport ABI" {
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(CustomShaderFailureReport));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(CustomShaderFailureReport, "reason"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(CustomShaderFailureReport, "generation"));
+}
 
 test {
     // Our comptime-chosen renderer

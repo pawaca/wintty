@@ -2006,6 +2006,16 @@ pub fn updateConfig(
     self: *Surface,
     original: *const configpkg.Config,
 ) !void {
+    return self.updateConfigTagged(original, 0);
+}
+
+/// Update the surface configuration and preserve a host-provided identity for
+/// any custom-shader failure produced by this renderer update.
+pub fn updateConfigTagged(
+    self: *Surface,
+    original: *const configpkg.Config,
+    shader_generation: u64,
+) !void {
     // Apply our conditional state. If we fail to apply the conditional state
     // then we log and attempt to move forward with the old config.
     var config_: ?configpkg.Config = original.changeConditionalState(
@@ -2080,7 +2090,7 @@ pub fn updateConfig(
 
     // We need to store our configs in a heap-allocated pointer so that
     // our messages aren't huge.
-    var renderer_message = try rendererpkg.Message.initChangeConfig(self.alloc, config);
+    var renderer_message = try rendererpkg.Message.initChangeConfig(self.alloc, config, shader_generation);
     errdefer renderer_message.deinit();
     var termio_config_ptr = try self.alloc.create(termio.Termio.DerivedConfig);
     errdefer self.alloc.destroy(termio_config_ptr);

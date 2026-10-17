@@ -555,6 +555,13 @@ pub fn add(
 
     // C files
     step.root_module.link_libc = true;
+    // Windows static libraries are consumed by an external linker that does
+    // not carry Zig's UBSan runtime. Use the module option rather than
+    // per-source Clang flags: translate-c receives C flags from linked
+    // dependencies and Zig's Aro frontend rejects the Clang sanitizer flags.
+    if (step.rootModuleTarget().os.tag == .windows) {
+        step.root_module.sanitize_c = .off;
+    }
     step.root_module.addIncludePath(b.path("src/stb"));
     // stb decodes untrusted image bytes, so it gets a stack protector
     // wherever the runtime is guaranteed to be there. Not on the msvc ABI:
@@ -569,16 +576,10 @@ pub fn add(
     // calls this function, it reaches addSimd directly, so stb.c cannot
     // land there and narrowing this gate to ghostty-vt would re-open the
     // failure on ghostty-static.lib.
-    // Disable ubsan for MSVC: Zig's ubsan runtime cannot be bundled on
-    // Windows (LNK4229), leaving __ubsan_handle_* unresolved when the
-    // static archive is consumed by an external linker.
     step.root_module.addCSourceFiles(.{
         .files = &.{"src/stb/stb.c"},
         .flags = if (step.rootModuleTarget().abi == .msvc)
-            &.{
-                "-fno-sanitize=undefined",
-                "-fno-sanitize-trap=undefined",
-            }
+            &.{}
         else
             &.{"-fstack-protector-strong"},
     });
@@ -1115,14 +1116,10 @@ pub fn addSimd(
             "-DSIMDUTF_NO_LIBCXX",
         );
 
-        // Disable ubsan for Windows C/C++ objects to avoid undefined
-        // __ubsan_handle_* references. The Zig libraries on Windows don't
-        // currently bundle a matching UBSan runtime for these objects in
-        // our build configurations (this affects both MSVC and GNU ABIs).
-        if (target.result.os.tag == .windows) try flags.appendSlice(b.allocator, &.{
-            "-fno-sanitize=undefined",
-            "-fno-sanitize-trap=undefined",
-        });
+        // Disable C/C++ UBSan through the module switch. Besides keeping the
+        // runtime out of Windows static archives, this avoids forwarding
+        // Clang-only sanitizer flags to translate-c's Aro frontend.
+        if (target.result.os.tag == .windows) m.sanitize_c = .off;
         if (target.result.abi == .msvc) try flags.appendSlice(b.allocator, &.{
             // -fno-autolink also drops UCRT's /alternatename fallback.
             "-D_Avx2WmemEnabledWeakValue=_Avx2WmemEnabled",
