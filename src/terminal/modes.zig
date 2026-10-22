@@ -347,6 +347,8 @@ const entries: []const ModeEntry = &.{
     .{ .name = "report_color_scheme", .value = 2031 },
     .{ .name = "report_visibility", .value = 2033, .default_configurable = false },
     .{ .name = "in_band_size_reports", .value = 2048 },
+    // ConPTY requests Win32 input records to preserve modified console keys.
+    .{ .name = "win32_input", .value = 9001, .default_configurable = false, .disabled = builtin.os.tag != .windows },
     // Kitty clipboard protocol paste events. When set, a user-initiated
     // paste sends an unsolicited OSC 5522 targets listing with a
     // one-time password instead of pasting the text.
