@@ -841,10 +841,10 @@ fn safetyNetCallback(
     t.drainMailbox() catch |err|
         log.err("error draining mailbox (safety net) err={}", .{err});
 
-    // While hidden this is the whole tick: output-driven wakes are
-    // gated off, the mailbox is the only channel, and the drain
-    // unblocks it.
-    //
+    // A hidden surface still owns device references. Release a removed
+    // device without rendering it, so it cannot block its visible siblings.
+    const recovery_pending = t.renderer.pollDeviceRecovery();
+
     // While visible the mailbox is not where output strands: the pty
     // thread marks the terminal dirty and notifies `wakeup` directly
     // (termio's queueRender), so a lost notify leaves the frame state
@@ -853,7 +853,7 @@ fn safetyNetCallback(
     // blink timer and every other wake is a one-shot that already
     // fired. Ask the terminal whether a frame is owed and draw it;
     // on a clean terminal the ask is a cheap peek, not a frame.
-    if (t.flags.visible and t.renderer.hasPendingFrame(t.state)) {
+    if (t.flags.visible and (recovery_pending or t.renderer.hasPendingFrame(t.state))) {
         _ = renderCallback(t, undefined, undefined, {});
     }
 
@@ -1726,9 +1726,9 @@ test "safety net draws pending frames on visible surfaces" {
     const body = src[start..end];
 
     // The visible-side draw, gated by the pending-frame peek.
-    try std.testing.expect(std.mem.indexOf(u8, body, "t.flags.visible and t.renderer.hasPendingFrame(t.state)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "t.flags.visible and (recovery_pending or t.renderer.hasPendingFrame(t.state))") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "renderCallback(t, undefined, undefined, {})") != null);
-    // The mailbox drain stays: hidden surfaces rely on it alone.
+    // The mailbox drain stays alongside hidden-device recovery polling.
     try std.testing.expect(std.mem.indexOf(u8, body, "drainMailbox") != null);
 
     // Armed at thread start, and no cancel path anywhere: canceling on
