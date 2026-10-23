@@ -37,6 +37,9 @@ pub const Options = struct {
     /// Kitty keyboard protocol flags.
     kitty_flags: KittyFlags = .disabled,
 
+    /// ConPTY's DEC private mode 9001 (Windows only).
+    win32_input: bool = false,
+
     /// Determines whether the "option" key on macOS is treated
     /// as "alt" or not. See the Ghostty `macos_option-as-alt` config
     /// docs for a more detailed description of why this is needed.
@@ -65,6 +68,7 @@ pub const Options = struct {
             .ignore_keypad_with_numlock = t.modes.get(.ignore_keypad_with_numlock),
             .modify_other_keys_state_2 = t.flags.modify_other_keys_2,
             .kitty_flags = t.screens.active.kitty_keyboard.current(),
+            .win32_input = t.modes.get(.win32_input),
 
             // These can't be known from the terminal state.
             .macos_option_as_alt = .false,
@@ -84,7 +88,26 @@ pub fn encode(
     event: key.KeyEvent,
     opts: Options,
 ) std.Io.Writer.Error!void {
-    //std.log.warn("KEYENCODER event={} opts={}", .{ event, opts });
+    // ConPTY discards xterm's modified Enter (CSI 27;2;13~). A Win32
+    // record preserves Shift for native console readers instead. Keep
+    // negotiated Kitty input unchanged for applications using that protocol.
+    if (builtin.os.tag == .windows and opts.win32_input and
+        opts.kitty_flags.int() == 0 and
+        !event.composing and event.utf8.len == 0 and
+        (event.key == .enter or event.key == .numpad_enter))
+    {
+        var control_state: u16 = if (event.mods.shift) 0x10 else 0; // SHIFT_PRESSED
+        if (event.mods.ctrl) control_state |= if (event.mods.sides.ctrl == .right) @as(u16, 0x4) else 0x8;
+        if (event.mods.alt) control_state |= if (event.mods.sides.alt == .right) @as(u16, 0x1) else 0x2;
+        if (event.mods.num_lock) control_state |= 0x20;
+        if (event.mods.caps_lock) control_state |= 0x80;
+        if (event.key == .numpad_enter) control_state |= 0x100; // ENHANCED_KEY
+        return writer.print("\x1b[13;28;{d};{d};{d};1_", .{
+            @as(u8, if (event.mods.ctrl) 10 else 13),
+            @as(u8, if (event.action == .release) 0 else 1),
+            control_state,
+        });
+    }
     return if (opts.kitty_flags.int() != 0) try kitty(
         writer,
         event,
@@ -1398,6 +1421,61 @@ test "kitty: alt+backspace emits CSI u" {
         .kitty_flags = .{ .disambiguate = true },
     });
     try testing.expectEqualStrings("\x1b[127;3u", writer.buffered());
+}
+
+test "win32: shifted Enter keeps console key modifiers and releases" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const Case = struct { event: key.KeyEvent, expected: []const u8 };
+    const cases = [_]Case{
+        .{ .event = .{ .key = .enter, .mods = .{ .shift = true } }, .expected = "\x1b[13;28;13;1;16;1_" },
+        .{ .event = .{ .key = .enter, .action = .repeat, .mods = .{ .shift = true } }, .expected = "\x1b[13;28;13;1;16;1_" },
+        .{ .event = .{ .key = .enter, .action = .release, .mods = .{ .shift = true } }, .expected = "\x1b[13;28;13;0;16;1_" },
+        .{ .event = .{ .key = .enter, .action = .release }, .expected = "\x1b[13;28;13;0;0;1_" },
+        .{ .event = .{ .key = .enter }, .expected = "\x1b[13;28;13;1;0;1_" },
+        .{ .event = .{ .key = .numpad_enter, .mods = .{ .shift = true } }, .expected = "\x1b[13;28;13;1;272;1_" },
+        .{ .event = .{ .key = .enter, .mods = .{ .shift = true, .ctrl = true, .alt = true, .caps_lock = true, .num_lock = true, .sides = .{ .ctrl = .right, .alt = .right } } }, .expected = "\x1b[13;28;10;1;181;1_" },
+    };
+    for (cases) |case| {
+        var buf: [128]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        try encode(&writer, case.event, .{ .win32_input = true });
+        try testing.expectEqualStrings(case.expected, writer.buffered());
+    }
+}
+
+test "win32: unnegotiated and Kitty Enter keep their existing encodings" {
+    const Case = struct { event: key.KeyEvent, options: Options };
+    const cases = [_]Case{
+        .{ .event = .{ .key = .enter, .mods = .{ .shift = true } }, .options = .{} },
+        .{ .event = .{ .key = .key_a, .utf8 = "a" }, .options = .{ .win32_input = true } },
+        .{ .event = .{ .key = .enter, .mods = .{ .shift = true }, .utf8 = "A" }, .options = .{ .win32_input = true } },
+        .{ .event = .{ .key = .enter, .mods = .{ .shift = true } }, .options = .{ .win32_input = true, .kitty_flags = .{ .disambiguate = true } } },
+    };
+    for (cases) |case| {
+        var expected_buf: [128]u8 = undefined;
+        var expected: std.Io.Writer = .fixed(&expected_buf);
+        var options = case.options;
+        options.win32_input = false;
+        try encode(&expected, case.event, options);
+        var actual_buf: [128]u8 = undefined;
+        var actual: std.Io.Writer = .fixed(&actual_buf);
+        try encode(&actual, case.event, case.options);
+        try testing.expectEqualStrings(expected.buffered(), actual.buffered());
+    }
+}
+
+test "win32: encoding follows private mode negotiation and reset" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var terminal = try Terminal.init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer terminal.deinit(testing.allocator);
+    try testing.expect(!Options.fromTerminal(&terminal).win32_input);
+    terminal.modes.set(.win32_input, true);
+    try testing.expect(Options.fromTerminal(&terminal).win32_input);
+    terminal.modes.set(.win32_input, false);
+    try testing.expect(!Options.fromTerminal(&terminal).win32_input);
+    terminal.modes.set(.win32_input, true);
+    terminal.modes.reset();
+    try testing.expect(!Options.fromTerminal(&terminal).win32_input);
 }
 
 test "kitty: shift+enter emits CSI u" {

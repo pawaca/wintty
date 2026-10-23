@@ -358,6 +358,8 @@ const entries: []const ModeEntry = &.{
         // Kitty clipboard read that a paste event grants.
         .disabled = build_options.artifact != .lib and builtin.os.tag != .macos,
     },
+    // Append modes to preserve existing snapshot bit assignments.
+    .{ .name = "win32_input", .value = 9001, .default_configurable = false, .disabled = builtin.os.tag != .windows },
 };
 
 test {

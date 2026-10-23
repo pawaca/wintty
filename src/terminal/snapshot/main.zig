@@ -18,9 +18,10 @@
 //!
 //! ## Snapshot Format
 //!
-//! This documents snapshot format 1. Version 1 is the work-in-progress
-//! format that we intended to continue to break until we can promise
-//! binary compatibility.
+//! Writers emit snapshot format 2 and readers also accept format 1.
+//! Version 2 adds Win32 input at mode bit 43 without moving older modes.
+//! Version 1 readers reject version 2 rather than misinterpreting that bit;
+//! version 2 readers ignore bit 43 when reading version 1 snapshots.
 //!
 //! A snapshot is one envelope followed by a sequence of records. The envelope
 //! occurs once at byte zero. Every record is independently framed as a fixed

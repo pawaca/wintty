@@ -296,8 +296,7 @@ pub const Decoder = struct {
         errdefer self.state = .failed;
         const reader = self.source;
 
-        // Read the envelope, which is currently just a verification step.
-        try envelope.decode(reader);
+        const wire_version = try envelope.decodeVersion(reader);
 
         // TERMINAL establishes terminal-wide state and allocates empty
         // screen slots with their final routing. SCREEN values replace those
@@ -305,6 +304,12 @@ pub const Decoder = struct {
         // pointer, stay valid.
         var result = try terminal.decode(reader, io_, alloc);
         errdefer result.deinit(alloc);
+        if (wire_version == 1) {
+            // Bit 43 was reserved in v1, even when set by a future writer.
+            result.modes.values.win32_input = false;
+            result.modes.saved.win32_input = false;
+            result.modes.default.win32_input = false;
+        }
 
         // TERMINAL initializes exactly the number of screen slots it
         // declared. Decode that many SCREEN sequences and route each one by
@@ -640,7 +645,40 @@ pub fn decodeExact(
 
 const test_encode_options: EncodeOptions = .{ .continuation = .ground };
 const test_decode_options: DecodeOptions = .{ .max_continuation_bytes = 1024 };
-const test_complete_fixture = test_fixture.parse(@embedFile("testdata/complete-v1.hex"));
+const test_complete_fixture = test_fixture.parse(@embedFile("testdata/complete-v2.hex"));
+
+test "snapshot versions preserve existing modes and new Win32 mode" {
+    const testing = std.testing;
+    const v1_fixture = comptime test_fixture.parse(@embedFile("testdata/complete-v1.hex"));
+    var old_source: std.Io.Reader = .fixed(&v1_fixture);
+    var old = try decode(testing.allocator, testing.io, &old_source, test_decode_options);
+    defer old.deinit(testing.allocator);
+    try testing.expect(!old.terminal.?.modes.values.win32_input);
+
+    var t = try Terminal.init(testing.io, testing.allocator, .{ .cols = 2, .rows = 2 });
+    defer t.deinit(testing.allocator);
+    t.modes.values.kitty_paste_events = true;
+    t.modes.values.win32_input = true;
+    t.modes.saved.win32_input = true;
+    t.modes.default.win32_input = true;
+    var bytes: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer bytes.deinit();
+    try encode(testing.allocator, &bytes.writer, &t, test_encode_options);
+    var source: std.Io.Reader = .fixed(bytes.written());
+    var restored = try decode(testing.allocator, testing.io, &source, test_decode_options);
+    defer restored.deinit(testing.allocator);
+    try testing.expectEqualDeep(t.modes, restored.terminal.?.modes);
+
+    // The same otherwise valid record was allowed to carry reserved bits in v1.
+    bytes.written()[8] = 1;
+    var legacy_source: std.Io.Reader = .fixed(bytes.written());
+    var legacy = try decode(testing.allocator, testing.io, &legacy_source, test_decode_options);
+    defer legacy.deinit(testing.allocator);
+    try testing.expect(legacy.terminal.?.modes.values.kitty_paste_events);
+    try testing.expect(!legacy.terminal.?.modes.values.win32_input);
+    try testing.expect(!legacy.terminal.?.modes.saved.win32_input);
+    try testing.expect(!legacy.terminal.?.modes.default.win32_input);
+}
 
 /// Build a 2x3 test terminal whose primary screen carries `history_pages`
 /// complete two-row pages above a three-row active page. The top-left cell
@@ -800,8 +838,8 @@ test "complete snapshot round trip with history and alternate screen" {
     try testing.expectEqualDeep(source_memory, primary.pages.memoryStats());
     try test_fixture.expectEqual(
         .snapshot,
-        "src/terminal/snapshot/testdata/complete-v1.hex",
-        "snapshot_fixture-complete-v1.hex",
+        "src/terminal/snapshot/testdata/complete-v2.hex",
+        "snapshot_fixture-complete-v2.hex",
         &test_complete_fixture,
         encoded.written(),
     );
