@@ -5,7 +5,7 @@ meta:
   license: MIT
   endian: le
 doc: |
-  Ghostty terminal snapshot format version 1.
+  Ghostty terminal snapshot formats 1 and 2.
 
   A complete snapshot contains an envelope, terminal-wide state, one or two
   renderable screen sequences, one raw standard-Stream CONTINUATION, a READY
@@ -156,7 +156,8 @@ types:
         contents: [0x47, 0x48, 0x4f, 0x53, 0x54, 0x53, 0x4e, 0x50]
       - id: version
         type: u2
-        valid: 1
+        valid:
+          any-of: [1, 2]
 
   record_header:
     doc: |
@@ -390,13 +391,13 @@ types:
       Each named instance exposes one bit from the little-endian integer.
       Arithmetic division is used instead of bitwise operations because the
       JavaScript target implements those operations with signed 32-bit values.
-      All values remain exact because the registry occupies only 43 bits,
+      All values remain exact because the registry occupies only 44 bits,
       within JavaScript's 53-bit safe integer range.
     seq:
       - id: raw
         type: u8
         valid:
-          max: 8796093022207
+          max: 17592186044415
     instances:
       disable_keyboard:
         value: (raw / 1) % 2 != 0
@@ -484,6 +485,8 @@ types:
         value: (raw / 2199023255552) % 2 != 0
       kitty_paste_events:
         value: (raw / 4398046511104) % 2 != 0
+      win32_input:
+        value: _root.envelope.version >= 2 and (raw / 8796093022208) % 2 != 0
 
   tab_stops:
     params:
