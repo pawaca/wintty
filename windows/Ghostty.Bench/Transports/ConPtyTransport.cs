@@ -22,6 +22,7 @@ namespace Ghostty.Bench.Transports;
 [SupportedOSPlatform("windows")]
 public sealed class ConPtyTransport : ITransport
 {
+    private const int STARTF_USESTDHANDLES = 0x00000100;
     private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
     private static readonly IntPtr PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = (IntPtr)0x00020016;
 
@@ -101,6 +102,10 @@ public sealed class ConPtyTransport : ITransport
 
         var si = new STARTUPINFOEX();
         si.StartupInfo.cb = Marshal.SizeOf<STARTUPINFOEX>();
+        // Explicit null handles request ConPTY defaults instead of copying a host's
+        // redirected pipe/file handles, which are invalid in this non-inheriting child.
+        // Matches microsoft/terminal TerminalConnection/ConptyConnection.cpp.
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         si.lpAttributeList = _attrList;
 
         string cmdLine = $"\"{childExePath}\"";
