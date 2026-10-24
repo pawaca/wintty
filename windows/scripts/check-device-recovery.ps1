@@ -17,6 +17,11 @@ if (!$InLane) {
 }
 $out = Join-Path $env:TEMP ('device-recovery-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $out | Out-Null
+# The embedded probe currently uses defaults only. Keep its children isolated
+# as well, so future runtime config reads cannot reach a user's configuration.
+$env:XDG_CONFIG_HOME = Join-Path $out 'config'
+$env:WINTTY_TEST_CONFIG = '1'
+New-Item -ItemType Directory -Path $env:XDG_CONFIG_HOME | Out-Null
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (!$vs) { throw 'Visual C++ tools are required' }
