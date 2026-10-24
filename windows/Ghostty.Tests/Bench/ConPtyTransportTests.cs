@@ -23,24 +23,34 @@ public class ConPtyTransportTests
 
         using var transport = new ConPtyTransport(childPath);
 
-        // Read up to 256 bytes. Any n > 0 proves conhost is routing output.
+        // Require the child sentinel, not just a conhost preamble: a child with
+        // invalid inherited standard handles can never write RDY to this PTY.
         var readTask = Task.Run(() =>
         {
             var buf = new byte[256];
-            return transport.Output.Read(buf, 0, buf.Length);
+            using var output = new MemoryStream();
+            while (output.Length < 4096)
+            {
+                int count = transport.Output.Read(buf, 0, buf.Length);
+                if (count <= 0) return false;
+                output.Write(buf, 0, count);
+                if (System.Text.Encoding.ASCII.GetString(output.ToArray()).Contains("RDY", StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
         });
 
-        int bytesRead;
+        bool childReady;
         try
         {
-            bytesRead = await readTask.WaitAsync(TimeSpan.FromSeconds(60));
+            childReady = await readTask.WaitAsync(TimeSpan.FromSeconds(60));
         }
         catch (TimeoutException)
         {
-            Assert.Fail("ConPtyTransport produced no output within 60s -- regression of UpdateProcThreadAttribute lpValue marshalling");
+            Assert.Fail("ConPtyTransport child did not emit RDY within 60s -- check pseudoconsole attachment and standard-handle isolation");
             throw; // unreachable: Assert.Fail throws, but satisfies definite-assignment.
         }
 
-        Assert.True(bytesRead > 0, "ConPtyTransport output pipe EOF'd before conhost sent its VT preamble");
+        Assert.True(childReady, "ConPtyTransport ended or exceeded its output bound before the child emitted RDY");
     }
 }
