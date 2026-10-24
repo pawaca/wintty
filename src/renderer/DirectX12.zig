@@ -729,6 +729,29 @@ pub fn deviceLost(self: *const DirectX12) bool {
     return self.device_lost;
 }
 
+/// Poll without drawing so hidden surfaces also notice a removed singleton.
+pub fn pollDeviceLost(self: *DirectX12) bool {
+    if (!self.device_lost) {
+        if (self.dev) |*dev_ptr| {
+            if (dev_ptr.removed()) self.handleDeviceRemoved();
+        }
+    }
+    return self.device_lost;
+}
+
+/// Called after the generic renderer has released its device-owned resources.
+/// Release before attempting any rebuild, including when the surface stays
+/// hidden or has exhausted its recovery budget. Otherwise its COM references
+/// pin the removed adapter singleton and prevent other surfaces from recovering.
+pub fn releaseDeviceForRecovery(self: *DirectX12) !void {
+    const surface = self.surface orelse return error.NoSurface;
+    // The legacy composition ABI exports an unowned raw swap-chain pointer.
+    // Keep it alive until that ABI has a replacement notification.
+    if (surface == .composition) return error.DeviceUnrecoverable;
+    device.dropWarmDevice();
+    self.deinitGpu(.keep_surface_handle);
+}
+
 /// Replace a lost device with a new one built for the same surface.
 ///
 /// Everything the generic renderer created on the old device (shaders,
@@ -768,11 +791,7 @@ pub fn recoverDevice(self: *DirectX12) !void {
 
     // A warm reference still parked from warmup() would pin the removed
     // singleton and make initGpu's D3D12CreateDevice return it again.
-    device.dropWarmDevice();
-
-    // Unconditional: with no device this sweeps whatever a failed
-    // attempt built before it stopped.
-    self.deinitGpu(.keep_surface_handle);
+    try self.releaseDeviceForRecovery();
 
     try self.initGpu(surface, width, height);
     self.device_lost = false;

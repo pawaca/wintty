@@ -2883,34 +2883,21 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
         }
 
-        /// Rebuild everything on a replacement GPU device after the old
-        /// one was lost. Caller holds the draw mutex.
-        ///
-        /// Two halves, so that a failure in the second can be retried
-        /// without repeating the first: tear down all state that lived on
-        /// the dead device (once, guarded by `device_recovery_pending`),
-        /// then rebuild the device, the shaders, the swap chain and the
-        /// background image. Kitty images are not rebuilt here; they are
-        /// dropped and `images_lost` makes the next update re-upload them
-        /// from the terminal's storage.
-        ///
-        /// Both halves are on a budget (`RecoveryBudget`): a device that
-        /// cannot be rebuilt, or that comes back only to die again, is
-        /// eventually given up on rather than retried for as long as the
-        /// tab is open.
-        ///
-        /// Fails with `error.DeviceRecoveryPending` when the caller should
-        /// draw nothing and say nothing: a retry that is not yet due, and
-        /// also a surface that has been given up on for good. Fails with
-        /// the attempt's own error when one fails, which the renderer
-        /// thread logs like any other failed draw.
-        fn recoverDevice(self: *Self) !void {
-            if (self.device_recovery_abandoned) return error.DeviceRecoveryPending;
-            if (self.device_recovery_retry_at) |at| {
-                const now: std.Io.Timestamp = .now(global.io(), recovery_clock);
-                if (now.durationTo(at).nanoseconds > 0) return error.DeviceRecoveryPending;
+        /// Release a removed device even on hidden or idle surfaces. Called
+        /// on the render thread by its existing safety-net timer; this never
+        /// rebuilds or draws an offscreen surface.
+        pub fn pollDeviceRecovery(self: *Self) bool {
+            if (comptime !@hasDecl(GraphicsAPI, "pollDeviceLost")) return false;
+            self.draw_mutex.lockUncancelable(global.io());
+            defer self.draw_mutex.unlock(global.io());
+            if (self.api.pollDeviceLost()) {
+                self.prepareDeviceRecovery() catch |err|
+                    log.warn("device recovery preparation failed: {}", .{err});
             }
+            return self.device_recovery_pending and !self.device_recovery_abandoned;
+        }
 
+        fn prepareDeviceRecovery(self: *Self) !void {
             if (!self.device_recovery_pending) {
                 self.device_recovery_pending = true;
                 log.warn("GPU device lost; rebuilding renderer state", .{});
@@ -2918,7 +2905,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // Everything below was created on the dead device. The
                 // order matters only in that the backend's device goes
-                // last, inside `api.recoverDevice`: these objects retire
+                // last, inside `api.releaseDeviceForRecovery`: these objects retire
                 // into a queue the device owns. Each field is left in a
                 // state that is safe to deinit again, because a tab can
                 // close while the rebuild is still failing.
@@ -2956,14 +2943,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // state the dead device owned.
                 self.atlas_max_size_synced = false;
 
-                // Spend the loss last, so everything above is released
-                // even by a surface that has run out of budget. What that
-                // does not cover is the backend's own device: it is
-                // released inside `api.recoverDevice`, which the abandon
-                // below returns before reaching, so a removed device and
-                // the objects it owns stay allocated until the tab closes.
-                // The driver has already reclaimed the VRAM behind them,
-                // and `deinit` sweeps the rest.
+                // Release the backend reference before the budget can abandon
+                // this surface. A hidden/abandoned sibling must not pin the
+                // adapter's removed singleton for all visible renderers.
+                self.api.releaseDeviceForRecovery() catch |err| {
+                    self.abandonRecovery(.unrecoverable_surface);
+                    return err;
+                };
+
                 const now: std.Io.Timestamp = .now(global.io(), recovery_clock);
                 const uptime: ?std.Io.Duration = if (self.device_up_since) |up|
                     up.durationTo(now)
@@ -2975,11 +2962,45 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     return error.DeviceRecoveryPending;
                 }
             }
+        }
+
+        /// Rebuild everything on a replacement GPU device after the old
+        /// one was lost. Caller holds the draw mutex.
+        ///
+        /// Two halves, so that a failure in the second can be retried
+        /// without repeating the first: tear down all state that lived on
+        /// the dead device (once, guarded by `device_recovery_pending`),
+        /// then rebuild the device, the shaders, the swap chain and the
+        /// background image. Kitty images are not rebuilt here; they are
+        /// dropped and `images_lost` makes the next update re-upload them
+        /// from the terminal's storage.
+        ///
+        /// Both halves are on a budget (`RecoveryBudget`): a device that
+        /// cannot be rebuilt, or that comes back only to die again, is
+        /// eventually given up on rather than retried for as long as the
+        /// tab is open.
+        ///
+        /// Fails with `error.DeviceRecoveryPending` when the caller should
+        /// draw nothing and say nothing: a retry that is not yet due, and
+        /// also a surface that has been given up on for good. Fails with
+        /// the attempt's own error when one fails, which the renderer
+        /// thread logs like any other failed draw.
+        fn recoverDevice(self: *Self) !void {
+            try self.prepareDeviceRecovery();
+            if (self.device_recovery_abandoned) return error.DeviceRecoveryPending;
+            if (self.device_recovery_retry_at) |at| {
+                const now: std.Io.Timestamp = .now(global.io(), recovery_clock);
+                if (now.durationTo(at).nanoseconds > 0) return error.DeviceRecoveryPending;
+            }
 
             // Measured from the end of the attempt: creating a device on
             // an adapter mid driver-install can itself take seconds. Only
             // arm a deadline if there is another attempt to arm it for.
             errdefer {
+                // Shader/frame initialization may fail after a fresh device
+                // was created. Drop that partial backend too, before the
+                // attempt budget can leave this surface abandoned forever.
+                self.api.releaseDeviceForRecovery() catch {};
                 if (self.recovery_budget.attemptFailed()) {
                     self.device_recovery_retry_at = std.Io.Timestamp.now(
                         global.io(),
