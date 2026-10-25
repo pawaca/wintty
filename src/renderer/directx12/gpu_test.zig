@@ -3739,3 +3739,220 @@ test "DirectX12: textures built during init keep no command list past it" {
         try std.testing.expect(tex.command_list == null);
     }
 }
+
+fn frameUploadReadback(acquire: bool) !u32 {
+    if (comptime builtin.os.tag != .windows) return;
+
+    const DirectX12 = @import("../DirectX12.zig");
+
+    // Shared-texture mode: a real device and command queue with no window
+    // or swap chain, so this runs headless.
+    var api: DirectX12 = .{ .allocator = std.testing.allocator };
+    // Skip loudly, never silently. This is the one test standing between
+    // the tree and a silent memory-corruption regression, so a box with no
+    // D3D12 adapter must show up in the run's skip count rather than
+    // reporting a pass it never earned.
+    api.dev = Device.init(.{ .shared_texture = .{
+        .width = 64,
+        .height = 64,
+    } }, .{}) catch return error.SkipZigTest;
+    defer api.dev.?.deinit();
+    const dev = &api.dev.?;
+
+    // A cell buffer through the production options path.
+    const CellBuffer = buffer_mod.Buffer(u32);
+    var buf = try CellBuffer.init(api.bufferOptions(), 4);
+    defer buf.deinit();
+    try buf.sync(&.{ 17, 17, 17, 17 });
+    const old_resource = buf.resource orelse return error.BufferResourceMissing;
+
+    // Somewhere for the in-flight submission to copy the buffer into, so
+    // the command list genuinely references it.
+    var sink: ?*d3d12.ID3D12Resource = null;
+    {
+        const heap_props = d3d12.D3D12_HEAP_PROPERTIES{
+            .Type = .READBACK,
+            .CPUPageProperty = 0,
+            .MemoryPoolPreference = 0,
+            .CreationNodeMask = 0,
+            .VisibleNodeMask = 0,
+        };
+        const desc = d3d12.D3D12_RESOURCE_DESC{
+            .Dimension = .BUFFER,
+            .Alignment = 0,
+            .Width = 4 * @sizeOf(u32),
+            .Height = 1,
+            .DepthOrArraySize = 1,
+            .MipLevels = 1,
+            .Format = .UNKNOWN,
+            .SampleDesc = .{ .Count = 1, .Quality = 0 },
+            .Layout = .ROW_MAJOR,
+            .Flags = .NONE,
+        };
+        const hr = dev.device.CreateCommittedResource(
+            &heap_props,
+            0,
+            &desc,
+            d3d12.D3D12_RESOURCE_STATES.COPY_DEST,
+            null,
+            &d3d12.ID3D12Resource.IID,
+            @ptrCast(&sink),
+        );
+        if (com.FAILED(hr) or sink == null) return error.SinkCreationFailed;
+    }
+    defer _ = sink.?.Release();
+
+    var cmd_allocator: ?*d3d12.ID3D12CommandAllocator = null;
+    {
+        const hr = dev.device.CreateCommandAllocator(
+            .DIRECT,
+            &d3d12.ID3D12CommandAllocator.IID,
+            @ptrCast(&cmd_allocator),
+        );
+        if (com.FAILED(hr) or cmd_allocator == null) return error.CommandAllocatorCreationFailed;
+    }
+    defer _ = cmd_allocator.?.Release();
+
+    var command_list: ?*d3d12.ID3D12GraphicsCommandList = null;
+    {
+        const hr = dev.device.CreateCommandList(
+            0,
+            .DIRECT,
+            cmd_allocator.?,
+            null,
+            &d3d12.ID3D12GraphicsCommandList.IID,
+            @ptrCast(&command_list),
+        );
+        if (com.FAILED(hr) or command_list == null) return error.CommandListCreationFailed;
+    }
+    defer _ = command_list.?.Release();
+
+    // The gate. The queue blocks on it until this test signals it from the
+    // CPU, which is what makes "still in flight" a fact rather than a race.
+    var gate: ?*d3d12.ID3D12Fence = null;
+    {
+        const hr = dev.device.CreateFence(0, .NONE, &d3d12.ID3D12Fence.IID, @ptrCast(&gate));
+        if (com.FAILED(hr) or gate == null) return error.FenceCreationFailed;
+    }
+    defer _ = gate.?.Release();
+
+    // Record a read of the buffer. UPLOAD-heap buffers live in
+    // GENERIC_READ, which already includes COPY_SOURCE, so no barrier.
+    command_list.?.CopyBufferRegion(sink.?, 0, old_resource, 0, 4 * @sizeOf(u32));
+    if (com.FAILED(command_list.?.Close())) return error.CommandListCloseFailed;
+
+    // Park the queue, then submit. Nothing executes until the gate opens.
+    if (com.FAILED(dev.command_queue.Wait(gate.?, 1))) return error.QueueWaitFailed;
+    // Every exit from here on must open the gate AND drain before the
+    // defers unwind. Opening alone fixes the hang and buys a worse
+    // failure: the defers below release the command allocator, the command
+    // list and the sink LIFO, and the copy they belong to has just been
+    // let go, so a failing assertion would final-release resources the GPU
+    // is executing -- the exact CORRUPTION break this test is about, which
+    // kills the process with 2173 and reports nothing. Draining first
+    // means a red assertion stays a red assertion.
+    errdefer {
+        _ = gate.?.Signal(1);
+        dev.waitForGpu() catch {};
+    }
+    const lists = [_]*d3d12.ID3D12GraphicsCommandList{command_list.?};
+    dev.command_queue.ExecuteCommandLists(1, &lists);
+
+    // Signal the device fence the way drawFrameEnd does. Nothing is staged
+    // yet, so this seal is a no-op on the queue -- what it establishes is
+    // the fence value the grow below will be sealed against, and that the
+    // ordering matches production rather than being contrived here.
+    const work_value = dev.fence_value.fetchAdd(1, .release) + 1;
+    if (com.FAILED(dev.command_queue.Signal(dev.fence, work_value))) return error.FenceSignalFailed;
+    dev.retirement.seal(work_value);
+
+    // The submission is provably unretired.
+    try std.testing.expect(dev.fence.GetCompletedValue() < work_value);
+
+    // Generic frame-data slot 1 can still be busy while DXGI slot 0 is free.
+    api.data_fence_values[1] = work_value;
+    const Opener = struct {
+        fn run(fence: *d3d12.ID3D12Fence) void {
+            const kernel32 = struct {
+                extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
+            };
+            kernel32.Sleep(200);
+            _ = fence.Signal(1);
+        }
+    };
+    const opener = try std.Thread.spawn(.{}, Opener.run, .{gate.?});
+    defer opener.join();
+    if (acquire) try api.prepareFrame(1);
+    try buf.sync(&.{ 29, 29, 29, 29 });
+    try dev.waitForGpu();
+    var mapped: ?*anyopaque = null;
+    const range = d3d12.D3D12_RANGE{ .Begin = 0, .End = 16 };
+    if (com.FAILED(sink.?.Map(0, &range, &mapped)) or mapped == null)
+        return error.ReadbackFailed;
+    defer sink.?.Unmap(0, null);
+    const values: [*]const u32 = @ptrCast(@alignCast(mapped.?));
+    return values[0];
+}
+
+test "Renderer: acquire data slot before overwriting mapped upload buffers" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    // The negative control proves the GPU really reads the changed memory
+    // when the producer does not wait, independently of normal GPU speed.
+    try std.testing.expectEqual(@as(u32, 29), try frameUploadReadback(false));
+    try std.testing.expectEqual(@as(u32, 17), try frameUploadReadback(true));
+}
+
+// CPU frame data can be replaced before execution. The submitted draw must
+// retain the values it recorded, without holding an upload-resource address.
+test "inline uniform GPU draw survives frame overwrite and destruction" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const DirectX12 = @import("../DirectX12.zig");
+    const size = snapshot_test.SIZE;
+    var api: DirectX12 = .{ .allocator = std.testing.allocator };
+    try api.initGpu(.{ .shared_texture = .{ .width = size, .height = size } }, size, size);
+    defer api.deinit();
+    const dev = &api.dev.?;
+    var shaders = try Shaders.init(dev.device, std.testing.allocator, &.{});
+    defer shaders.deinit(std.testing.allocator);
+    defer dev.waitForGpu() catch {};
+    const frame = &api.gpu_frames[0].?;
+    try frame.reset();
+    const cl = frame.command_list.?;
+    const target: @import("Target.zig") = .{
+        .resource = dev.shared_texture.?.resource,
+        .rtv_handle = api.shared_rtv.?,
+        .width = size,
+        .height = size,
+    };
+    var uniforms = std.mem.zeroes(shaders_mod.Uniforms);
+    uniforms.bg_color = .{ 255, 0, 0, 255 };
+    var buf = try Buffer(shaders_mod.Uniforms).init(api.uniformBufferOptions(), 1);
+    try buf.sync(&.{uniforms});
+    var pass = RenderPassMod.begin(.{
+        .command_list = cl,
+        .attachments = &.{.{ .target = .{ .target = target }, .clear_color = .{ 0, 0, 0, 1 } }},
+    });
+    pass.step(.{
+        .pipeline = shaders.pipelines.bg_color,
+        .uniforms = buf.buffer,
+        .draw = .{ .vertex_count = 3 },
+    });
+    pass.complete();
+    try std.testing.expect(!com.FAILED(cl.Close()));
+    // This is deliberately before execution, rather than a race with the GPU.
+    uniforms.bg_color = .{ 0, 255, 0, 255 };
+    try buf.sync(&.{uniforms});
+    buf.deinit();
+    const lists = [_]*d3d12.ID3D12GraphicsCommandList{cl};
+    dev.command_queue.ExecuteCommandLists(1, &lists);
+    try dev.waitForGpu();
+    const snap = try dev.snapshotLastFrame(target.resource.?, size, size);
+    defer {
+        _ = d3d12.CloseHandle(snap.resource_handle);
+        _ = d3d12.CloseHandle(snap.fence_handle);
+    }
+    var rows: [size * size * 4]u8 = undefined;
+    try snapshot_test.readbackSnapshot(dev, snap, &rows);
+    for (0..size * size) |i|
+        try std.testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, rows[i * 4 ..][0..4]);
+}

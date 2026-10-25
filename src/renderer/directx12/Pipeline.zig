@@ -4,7 +4,7 @@
 //! ID3D12RootSignature. The root signature defines the resource binding
 //! layout that all pipelines share:
 //!
-//!   Param 0: CBV at b0 (Uniforms constant buffer)
+//!   Param 0: inline constants at b0 (built-in Uniforms)
 //!   Param 1: Descriptor table, one SRV at t0
 //!   Param 2: Descriptor table for samplers at s0
 //!   Param 3: Inline SRV at t3 (structured buffer, e.g. cells_bg)
@@ -69,6 +69,7 @@ pub const BlendMode = enum {
 
 /// Root parameter indices. Must match createRootSignature() layout.
 pub const root_param_cbv: u32 = 0;
+pub const uniform_constant_count: u32 = @sizeOf(@import("gpu_data.zig").Uniforms) / @sizeOf(u32);
 pub const root_param_srv_table: u32 = 1;
 pub const root_param_sampler_table: u32 = 2;
 pub const root_param_buffer_srv: u32 = 3;
@@ -123,14 +124,14 @@ const sampler_range = d3d12.D3D12_DESCRIPTOR_RANGE1{
 
 /// The main root signature's parameters. See createRootSignature.
 pub const main_root_params = [_]d3d12.D3D12_ROOT_PARAMETER1{
-    // [0] Inline CBV at b0 -- binds with SetGraphicsRootConstantBufferView.
-    // DATA_VOLATILE: uniform buffer changes every frame.
+    // [0] Small built-in uniforms are copied into each draw command.
+    // No GPU address outlives the frame data when a surface is hidden.
     .{
-        .ParameterType = .CBV,
-        .u = .{ .Descriptor = .{
+        .ParameterType = .CONSTANTS,
+        .u = .{ .Constants = .{
             .ShaderRegister = 0,
             .RegisterSpace = 0,
-            .Flags = .DATA_VOLATILE,
+            .Num32BitValues = uniform_constant_count,
         } },
         .ShaderVisibility = .ALL,
     },
@@ -186,7 +187,7 @@ pub const main_root_params = [_]d3d12.D3D12_ROOT_PARAMETER1{
 /// Create the shared root signature used by all pipelines.
 ///
 /// The layout is:
-///   [0] CBV at b0 (inline root CBV -- just a GPU virtual address)
+///   [0] Inline built-in uniforms at b0
 ///   [1] Descriptor table: 1 SRV at t0
 ///   [2] Descriptor table: 1 sampler at s0
 ///   [3] Inline SRV at t3 (structured buffer data, e.g. cells_bg)
@@ -538,4 +539,15 @@ test "deinit does not touch root_signature" {
     const sentinel: *d3d12.ID3D12RootSignature = @ptrFromInt(0xDEAD_BEF0);
     const p: Pipeline = .{ .pso = null, .root_signature = sentinel };
     p.deinit(); // must not dereference root_signature
+}
+
+test "inline uniform root signature stays within the 64 DWORD budget" {
+    var cost: u32 = 0;
+    for (main_root_params) |p| cost += switch (p.ParameterType) {
+        .CONSTANTS => p.u.Constants.Num32BitValues,
+        .DESCRIPTOR_TABLE => 1,
+        .CBV, .SRV, .UAV => 2,
+    };
+    try std.testing.expect(cost <= 64);
+    try std.testing.expectEqual(@sizeOf(@import("gpu_data.zig").Uniforms), uniform_constant_count * @sizeOf(u32));
 }

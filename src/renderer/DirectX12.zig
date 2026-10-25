@@ -189,6 +189,11 @@ pending_command_list: ?*d3d12.ID3D12GraphicsCommandList = null,
 /// Must be saved here because GetCurrentBackBufferIndex advances after Present.
 pending_frame_index: u32 = 0,
 
+/// GenericRenderer's upload buffers rotate independently of DXGI back buffers.
+/// A submission owns both slots until its fence completes.
+data_fence_values: [swap_chain_count]u64 = @splat(0),
+pending_data_index: usize = 0,
+
 /// Counts Present calls, for the surface_init timing marks in
 /// drawFrameEnd (first 8 presents, or any that run long).
 present_count: u32 = 0,
@@ -581,6 +586,7 @@ pub fn initGpu(self: *DirectX12, surface: Surface, width: u32, height: u32) !voi
         };
     }
 
+    self.data_fence_values = @splat(0);
     self.applied_width = width;
     self.applied_height = height;
 
@@ -935,6 +941,7 @@ pub fn drawFrameEnd(self: *DirectX12) void {
     if (self.gpu_frames[frame_idx]) |*f| {
         f.fence_value = new_fence_value;
     }
+    self.data_fence_values[self.pending_data_index] = new_fence_value;
     const signal_hr = dev_ptr.command_queue.Signal(dev_ptr.fence, new_fence_value);
     if (!com.FAILED(signal_hr)) {
         // Bind every resource retired since the last submission to this
@@ -1332,6 +1339,32 @@ pub fn initTarget(self: *const DirectX12, width: usize, height: usize) !Target {
     // Target resource and RTV handle are set in beginFrame when we know
     // which back buffer is current. Start with the dimensions only.
     return .{ .width = width, .height = height };
+}
+
+/// Acquire the upload-buffer slot before GenericRenderer writes any mapped
+/// memory. The submission semaphore only proves CPU recording has finished;
+/// DXGI's back-buffer index does not identify this independent frame ring.
+pub fn prepareFrame(self: *DirectX12, data_index: usize) !void {
+    if (self.device_lost) return error.DeviceLost;
+    const dev = &(self.dev orelse return error.NoDevice);
+    if (dev.removed()) {
+        self.handleDeviceRemoved();
+        return error.DeviceLost;
+    }
+    const value = self.data_fence_values[data_index];
+    if (dev.fence.GetCompletedValue() < value) {
+        if (com.FAILED(dev.fence.SetEventOnCompletion(value, dev.fence_event)))
+            return error.FrameSyncFailed;
+        if (d3d12.WaitForSingleObject(dev.fence_event, d3d12.INFINITE) != 0)
+            return error.FrameSyncFailed;
+    }
+    // Device removal also signals outstanding fence events. It never grants
+    // permission to overwrite a buffer or submit more work to that device.
+    if (dev.removed()) {
+        self.handleDeviceRemoved();
+        return error.DeviceLost;
+    }
+    self.pending_data_index = data_index;
 }
 
 pub inline fn beginFrame(

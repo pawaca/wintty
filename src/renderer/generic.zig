@@ -2455,6 +2455,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // which is the worse failure -- `deinit` then blocks forever.
             var frame_owed = true;
             errdefer if (frame_owed) swap_chain.releaseFrame();
+
+            // DX12 releases the semaphore at submission, not GPU completion.
+            // Acquire this data slot before mutating any mapped upload buffer.
+            if (comptime @hasDecl(GraphicsAPI, "prepareFrame"))
+                try self.api.prepareFrame(swap_chain.frame_index);
+
             // log.debug("drawing frame index={}", .{swap_chain.frame_index});
 
             // `nextFrame` has waited on frame_sema, so this frame slot's

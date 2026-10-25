@@ -1225,7 +1225,7 @@ pub const ID3D12GraphicsCommandList = extern struct {
         SetComputeRoot32BitConstant: Reserved,
         SetGraphicsRoot32BitConstant: Reserved,
         SetComputeRoot32BitConstants: Reserved,
-        SetGraphicsRoot32BitConstants: Reserved,
+        SetGraphicsRoot32BitConstants: *const fn (*ID3D12GraphicsCommandList, u32, u32, *const anyopaque, u32) callconv(.winapi) void,
         SetComputeRootConstantBufferView: Reserved,
         SetGraphicsRootConstantBufferView: *const fn (*ID3D12GraphicsCommandList, RootParameterIndex: u32, BufferLocation: u64) callconv(.winapi) void,
         SetComputeRootShaderResourceView: Reserved,
@@ -1307,6 +1307,10 @@ pub const ID3D12GraphicsCommandList = extern struct {
 
     pub inline fn SetGraphicsRootDescriptorTable(self: *ID3D12GraphicsCommandList, index: u32, base_descriptor: D3D12_GPU_DESCRIPTOR_HANDLE) void {
         self.vtable.SetGraphicsRootDescriptorTable(self, index, base_descriptor.ptr);
+    }
+
+    pub inline fn SetGraphicsRoot32BitConstants(self: *ID3D12GraphicsCommandList, param: u32, count: u32, data: *const anyopaque, offset: u32) void {
+        self.vtable.SetGraphicsRoot32BitConstants(self, param, count, data, offset);
     }
 
     pub inline fn SetGraphicsRootConstantBufferView(self: *ID3D12GraphicsCommandList, index: u32, buffer_location: u64) void {
