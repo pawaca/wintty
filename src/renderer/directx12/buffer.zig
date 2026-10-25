@@ -1,6 +1,7 @@
-//! DX12 GPU buffer backed by an upload heap with persistent mapping.
+//! DX12 data buffers: inline built-in uniforms, and persistently mapped
+//! upload heaps for variable-sized cell, image and custom-shader data.
 //!
-//! Each Buffer(T) owns a single ID3D12Resource in D3D12_HEAP_TYPE.UPLOAD,
+//! Except for built-in uniforms, Buffer(T) owns an ID3D12Resource in D3D12_HEAP_TYPE.UPLOAD,
 //! mapped once at creation and never unmapped until deinit. Writes go
 //! through the mapped pointer via @memcpy -- zero-copy from the CPU side.
 //!
@@ -43,6 +44,7 @@ pub const Options = struct {
 /// under the 4GB limit so @intCast from usize is always safe here.
 pub const RawBuffer = struct {
     gpu_address: u64 = 0,
+    constants: ?@import("gpu_data.zig").Uniforms = null,
     size: u32 = 0,
     stride: u32 = 0,
 };
@@ -52,6 +54,7 @@ pub const RawBuffer = struct {
 /// Wraps an upload heap resource with persistent CPU mapping.
 /// Regrows automatically (2x) when sync data exceeds capacity.
 pub fn Buffer(comptime T: type) type {
+    if (T == @import("gpu_data.zig").Uniforms) return InlineUniformBuffer;
     return struct {
         const Self = @This();
 
@@ -244,4 +247,42 @@ pub fn Buffer(comptime T: type) type {
             @memcpy(dst[0..bytes], src[0..bytes]);
         }
     };
+}
+
+/// Built-in uniforms fit in root constants. The command list copies this CPU
+/// value at recording time, so hiding a surface cannot invalidate a GPU address.
+const InlineUniformBuffer = struct {
+    buffer: RawBuffer = .{},
+
+    pub fn init(_: Options, len: usize) !InlineUniformBuffer {
+        if (len != 1) return error.InvalidUniformCount;
+        return .{};
+    }
+
+    pub fn initFill(opts: Options, data: []const @import("gpu_data.zig").Uniforms) !InlineUniformBuffer {
+        var result = try init(opts, data.len);
+        try result.sync(data);
+        return result;
+    }
+
+    pub fn sync(self: *InlineUniformBuffer, data: []const @import("gpu_data.zig").Uniforms) !void {
+        if (data.len != 1) return error.InvalidUniformCount;
+        self.buffer.constants = data[0];
+    }
+
+    pub fn deinit(_: *const InlineUniformBuffer) void {}
+};
+
+test "inline uniform snapshots do not alias a reused or destroyed frame" {
+    const Uniforms = @import("gpu_data.zig").Uniforms;
+    var source = std.mem.zeroes(Uniforms);
+    source.bg_color = .{ 255, 0, 0, 255 };
+    var buf = try Buffer(Uniforms).init(.{ .retire = null }, 1);
+    try buf.sync(&.{source});
+    const recorded = buf.buffer;
+    source.bg_color = .{ 0, 255, 0, 255 };
+    try buf.sync(&.{source});
+    buf.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255 }, &recorded.constants.?.bg_color);
+    try std.testing.expectEqual(@as(u64, 0), recorded.gpu_address);
 }

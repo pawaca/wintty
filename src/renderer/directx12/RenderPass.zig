@@ -226,9 +226,12 @@ pub fn step(self: *RenderPass, s: Step) void {
         .triangle_strip => .TRIANGLESTRIP,
     });
 
-    // Bind uniforms as inline CBV at root parameter 0.
+    // Built-in uniforms are copied into command storage. Custom shader
+    // uniforms retain their separately sized upload buffer.
     if (s.uniforms) |buf| {
-        if (buf.gpu_address != 0) {
+        if (buf.constants) |*constants| {
+            cl.SetGraphicsRoot32BitConstants(Pipeline.root_param_cbv, Pipeline.uniform_constant_count, constants, 0);
+        } else if (buf.gpu_address != 0) {
             cl.SetGraphicsRootConstantBufferView(
                 Pipeline.root_param_cbv,
                 buf.gpu_address,
